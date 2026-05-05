@@ -317,3 +317,13 @@ agentic-harness-engineering/
 ## 许可证
 
 MIT
+
+---
+
+## Star 历史
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=china-qijizhifeng/agentic-harness-engineering&type=Date&theme=dark" />
+  <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=china-qijizhifeng/agentic-harness-engineering&type=Date" />
+  <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=china-qijizhifeng/agentic-harness-engineering&type=Date" />
+</picture>

@@ -315,3 +315,13 @@ A thin wrapper around `uv run python evolve.py` + tmux.
 ## License
 
 MIT
+
+---
+
+## Star History
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=china-qijizhifeng/agentic-harness-engineering&type=Date&theme=dark" />
+  <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=china-qijizhifeng/agentic-harness-engineering&type=Date" />
+  <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=china-qijizhifeng/agentic-harness-engineering&type=Date" />
+</picture>
