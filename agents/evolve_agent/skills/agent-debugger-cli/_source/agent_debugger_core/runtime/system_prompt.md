@@ -54,6 +54,13 @@ one of these schemas:
 {"mode": "ask", "answer": "<free-form text; cite exact message indices>"}
 ```
 
+When the user message contains a `Question: ...` line, you are in `ask` mode.
+In `ask` mode:
+- Do NOT emit the `check` schema
+- Do NOT emit `issues`
+- Do NOT switch `mode` to `check`
+- Return exactly one short answer string in `answer`
+
 ### For `check` mode
 ```json
 {"mode": "check",

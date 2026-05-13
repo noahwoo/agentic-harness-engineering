@@ -150,6 +150,45 @@ def _validate_check_payload(payload: dict) -> None:
             raise RunnerError(f"issue #{i}.message_index must be int")
 
 
+def _extract_ask_answer(payload: dict) -> str:
+    payload_mode = payload.get("mode")
+    if payload_mode == "check":
+        response = payload.get("response")
+        if isinstance(response, str) and response.strip():
+            return response
+
+        issues = payload.get("issues")
+        if isinstance(issues, list) and issues:
+            parts: list[str] = []
+            for issue in issues[:3]:
+                if not isinstance(issue, dict):
+                    continue
+                summary = issue.get("summary")
+                message_index = issue.get("message_index")
+                trace_id = issue.get("trace_id")
+                if isinstance(summary, str) and summary.strip():
+                    if isinstance(message_index, int) and isinstance(trace_id, str) and trace_id:
+                        parts.append(f"{summary} ({trace_id} #{message_index})")
+                    elif isinstance(message_index, int):
+                        parts.append(f"{summary} (#{message_index})")
+                    else:
+                        parts.append(summary)
+            if parts:
+                return "; ".join(parts)
+
+        raise RunnerError("ask payload used `mode=check` without usable response")
+
+    if payload_mode not in (None, "ask"):
+        raise RunnerError(f"expected mode=ask, got {payload_mode!r}")
+
+    for key in ("answer", "response", "result", "text", "content"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+
+    raise RunnerError("ask payload missing string `answer`")
+
+
 def _run_with_retry(agent, user_message: str, *, attempts: int = 3):
     last = None
     for i in range(attempts):
@@ -194,9 +233,26 @@ def run_agent(
         )
 
     if mode == "ask":
-        answer = payload.get("answer")
-        if not isinstance(answer, str):
-            raise RunnerError("ask payload missing string `answer`")
+        try:
+            answer = _extract_ask_answer(payload)
+        except RunnerError as first_err:
+            retry_msg = (
+                user_message
+                + "\n\nYour last complete_task payload was rejected: "
+                + str(first_err)
+                + "\nRe-emit a valid `ask` payload that matches the schema exactly: "
+                + '{"mode":"ask","answer":"..."}'
+            )
+            run_output = _run_with_retry(agent, retry_msg)
+            try:
+                payload = _parse_run_output(run_output)
+            except BudgetExceeded as be:
+                return RunnerResult(
+                    mode="ask",
+                    answer=f"[budget-exceeded] {be.fallback_text}".strip(),
+                    budget_exceeded=True,
+                )
+            answer = _extract_ask_answer(payload)
         return RunnerResult(mode="ask", answer=answer)
 
     try:
