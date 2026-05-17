@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Trajectory Debugger</title>
+<style>
+  :root {
+    --bg: #0d1117; --bg2: #161b22; --bg3: #21262d; --border: #30363d;
+    --text: #e6edf3; --text2: #8b949e; --accent: #58a6ff;
+    --green: #3fb950; --red: #f85149; --orange: #d29922; --purple: #bc8cff;
+    --blue: #58a6ff; --gray: #484f58;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
+         background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; }
+  header { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 10px 20px;
+           display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
+  header h1 { font-size: 16px; font-weight: 600; }
+  header .stats { font-size: 12px; color: var(--text2); }
+  .container { display: flex; flex: 1; overflow: hidden; }
+
+  /* Left panel */
+  .panel-left { width: 320px; border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; }
+  .search-bar { padding: 8px; border-bottom: 1px solid var(--border); display: flex; gap: 6px; }
+  .search-bar input { flex: 1; background: var(--bg3); border: 1px solid var(--border); color: var(--text);
+                       padding: 6px 10px; border-radius: 6px; font-size: 13px; outline: none; }
+  .search-bar select { background: var(--bg3); border: 1px solid var(--border); color: var(--text);
+                        padding: 6px; border-radius: 6px; font-size: 12px; }
+  .trace-list { flex: 1; overflow-y: auto; }
+  .trace-item { padding: 8px 12px; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 13px;
+                display: flex; align-items: center; gap: 8px; }
+  .trace-item:hover { background: var(--bg3); }
+  .trace-item.active { background: rgba(88,166,255,0.1); border-left: 3px solid var(--accent); }
+  .trace-item .tid { font-family: monospace; font-size: 12px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .trace-item .meta { font-size: 11px; color: var(--text2); white-space: nowrap; }
+  .badge { display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .badge-0 { background: rgba(63,185,80,0.2); color: var(--green); }
+  .badge-low { background: rgba(210,153,34,0.2); color: var(--orange); }
+  .badge-high { background: rgba(248,81,73,0.2); color: var(--red); }
+  .badge-unknown { background: var(--bg3); color: var(--text2); }
+
+  /* Center panel */
+  .panel-center { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .panel-center-header { padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--bg2);
+                          font-size: 13px; display: flex; align-items: center; gap: 12px; }
+  .tab-bar { display: flex; gap: 0; border-bottom: 1px solid var(--border); background: var(--bg2); flex-shrink: 0; }
+  .tab-btn { padding: 8px 20px; font-size: 13px; color: var(--text2); background: none; border: none;
+             border-bottom: 2px solid transparent; cursor: pointer; font-family: inherit; }
+  .tab-btn:hover { color: var(--text); background: var(--bg3); }
+  .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab-panel { flex: 1; overflow-y: auto; display: none; }
+  .tab-panel.active { display: block; }
+  .messages-scroll { padding: 12px 16px; }
+  .raw-json-view { padding: 12px 16px; font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+                   font-size: 12px; white-space: pre-wrap; word-break: break-word; color: var(--text2);
+                   line-height: 1.5; }
+  .msg-card { margin-bottom: 8px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .msg-header { padding: 6px 12px; display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; }
+  .msg-header:hover { filter: brightness(1.1); }
+  .msg-body { padding: 8px 12px; font-size: 13px; white-space: pre-wrap; word-break: break-word;
+              max-height: 300px; overflow-y: auto; display: none; border-top: 1px solid var(--border); background: var(--bg); }
+  .msg-body.open { display: block; }
+  .msg-card.role-system .msg-header { background: rgba(72,79,88,0.3); }
+  .msg-card.role-user .msg-header { background: rgba(88,166,255,0.15); }
+  .msg-card.role-assistant .msg-header { background: rgba(63,185,80,0.15); }
+  .msg-card.role-tool .msg-header { background: rgba(210,153,34,0.15); }
+  .role-tag { padding: 2px 8px; border-radius: 4px; font-weight: 600; font-size: 11px; text-transform: uppercase; }
+  .role-system .role-tag { background: var(--gray); }
+  .role-user .role-tag { background: rgba(88,166,255,0.3); color: var(--blue); }
+  .role-assistant .role-tag { background: rgba(63,185,80,0.3); color: var(--green); }
+  .role-tool .role-tag { background: rgba(210,153,34,0.3); color: var(--orange); }
+  .tool-calls-badge { background: rgba(188,140,255,0.2); color: var(--purple); padding: 2px 6px; border-radius: 4px; font-size: 11px; }
+  .msg-idx { color: var(--text2); font-family: monospace; }
+  .msg-chars { color: var(--text2); margin-left: auto; }
+  .issue-marker { background: rgba(248,81,73,0.2); color: var(--red); padding: 1px 6px; border-radius: 4px; font-size: 11px; }
+
+  /* Right panel */
+  .panel-right { width: 400px; border-left: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; }
+  .panel-right-header { padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--bg2); font-size: 14px; font-weight: 600; }
+  .panel-right-content { flex: 1; overflow-y: auto; padding: 12px 16px; }
+  .section { margin-bottom: 16px; }
+  .section-title { font-size: 13px; font-weight: 600; color: var(--text2); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .issue-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin-bottom: 8px; }
+  .issue-type { font-weight: 600; font-size: 13px; }
+  .issue-summary { font-size: 13px; margin-top: 4px; }
+  .issue-evidence { font-size: 12px; color: var(--text2); margin-top: 4px; font-style: italic; }
+  .issue-msgidx { font-size: 11px; color: var(--accent); cursor: pointer; margin-top: 4px; }
+  .overall { font-size: 13px; line-height: 1.5; color: var(--text2); }
+
+  /* Analysis controls */
+  .analyze-controls { padding: 12px 16px; border-top: 1px solid var(--border); background: var(--bg2); }
+  .analyze-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .analyze-row:last-child { margin-bottom: 0; }
+  .btn { padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg3);
+         color: var(--text); font-size: 13px; cursor: pointer; white-space: nowrap; }
+  .btn:hover { background: var(--border); }
+  .btn-primary { background: rgba(88,166,255,0.2); border-color: var(--accent); color: var(--accent); }
+  .btn-primary:hover { background: rgba(88,166,255,0.3); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .ask-input { flex: 1; background: var(--bg3); border: 1px solid var(--border); color: var(--text);
+               padding: 6px 10px; border-radius: 6px; font-size: 13px; }
+  .iter-slider { width: 80px; }
+  .iter-label { font-size: 12px; color: var(--text2); }
+
+  /* Agent log */
+  .agent-log { font-family: monospace; font-size: 12px; }
+  .log-status { color: var(--orange); font-style: italic; padding: 4px 0; }
+  .log-complete { background: rgba(63,185,80,0.1); border: 1px solid rgba(63,185,80,0.3);
+                  border-radius: 6px; padding: 10px; margin-top: 8px; }
+  .log-error { background: rgba(248,81,73,0.1); border: 1px solid rgba(248,81,73,0.3);
+               border-radius: 6px; padding: 10px; margin-top: 8px; color: var(--red); }
+
+  /* Iteration round */
+  .iter-round { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 6px; overflow: hidden; }
+  .iter-header { padding: 6px 10px; background: var(--bg2); display: flex; align-items: center; gap: 8px;
+                 cursor: pointer; font-size: 12px; user-select: none; }
+  .iter-header:hover { background: var(--bg3); }
+  .iter-header .step { color: var(--accent); font-weight: 600; }
+  .iter-header .tool-name { color: var(--purple); }
+  .iter-header .timing { color: var(--text2); margin-left: auto; white-space: nowrap; }
+  .iter-header .tokens { color: var(--text2); font-size: 11px; }
+  .iter-header .arrow { color: var(--text2); font-size: 10px; transition: transform 0.15s; }
+  .iter-round.open .iter-header .arrow { transform: rotate(90deg); }
+  .iter-body { display: none; border-top: 1px solid var(--border); }
+  .iter-round.open .iter-body { display: block; }
+  .iter-section { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  .iter-section:last-child { border-bottom: none; }
+  .iter-section-label { font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px;
+                        margin-bottom: 4px; font-weight: 600; }
+  .iter-tool-result { background: var(--bg); padding: 6px 8px; border-radius: 4px; margin-top: 4px;
+                      max-height: 200px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+                      font-size: 12px; line-height: 1.4; color: var(--text2); }
+  .iter-tool-args { background: var(--bg); padding: 6px 8px; border-radius: 4px; margin-top: 4px;
+                    white-space: pre-wrap; word-break: break-word; font-size: 12px; color: var(--text); }
+  .iter-content { background: var(--bg); padding: 8px 10px; border-radius: 4px; margin-top: 4px;
+                  white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.5; color: var(--text); }
+  .iter-running { padding: 6px 10px; color: var(--orange); font-style: italic; animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+  .tool-call-wrap { cursor: pointer; position: relative; }
+  .tool-call-wrap .tool-tip { display: none; position: absolute; left: 0; top: 100%; z-index: 100;
+                              background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
+                              padding: 10px 12px; max-width: 560px; white-space: pre-wrap; word-break: break-all;
+                              font-size: 12px; color: var(--text); line-height: 1.5; box-shadow: 0 4px 16px rgba(0,0,0,0.5); }
+  .tool-call-wrap:hover .tool-tip { display: block; }
+
+  .empty-state { display: flex; align-items: center; justify-content: center; height: 100%;
+                 color: var(--text2); font-size: 14px; }
+
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--bg3); border-radius: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Agent Trajectory Debugger</h1>
+  <span class="stats" id="headerStats">Loading...</span>
+</header>
+<div class="container">
+  <!-- Left: Trace List -->
+  <div class="panel-left">
+    <div class="search-bar">
+      <input type="text" id="searchInput" placeholder="Search trace ID...">
+      <select id="issueFilter">
+        <option value="">All</option>
+        <option value="clean">Clean (0)</option>
+        <option value="has_issues">Has issues</option>
+        <option value="截断">截断</option>
+        <option value="工具调用错误">工具错误</option>
+        <option value="指令不遵循">指令不遵循</option>
+        <option value="格式错误">格式错误</option>
+        <option value="幻觉">幻觉</option>
+      </select>
+    </div>
+    <div class="trace-list" id="traceList"></div>
+  </div>
+
+  <!-- Center: Message Viewer -->
+  <div class="panel-center">
+    <div class="panel-center-header" id="centerHeader">
+      <span>Select a trace from the list</span>
+    </div>
+    <div class="tab-bar" id="tabBar">
+      <button class="tab-btn active" data-tab="messages" onclick="switchTab('messages')">Messages</button>
+      <button class="tab-btn" data-tab="raw" onclick="switchTab('raw')">Raw JSON</button>
+    </div>
+    <div class="tab-panel active" id="tabMessages">
+      <div class="messages-scroll" id="messagesScroll">
+        <div class="empty-state">Select a trace to view messages</div>
+      </div>
+    </div>
+    <div class="tab-panel" id="tabRaw">
+      <div class="raw-json-view" id="rawJsonView">
+        <div class="empty-state">Select a trace to view raw JSON</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right: Analysis -->
+  <div class="panel-right">
+    <div class="panel-right-header">Analysis</div>
+    <div class="panel-right-content" id="analysisContent">
+      <div class="empty-state">Select a trace to see analysis</div>
+    </div>
+    <div class="analyze-controls">
+      <div class="analyze-row">
+        <button class="btn btn-primary" id="btnAnalyze" disabled>Run Deep Analysis</button>
+        <label class="iter-label">Iter:</label>
+        <input type="range" class="iter-slider" id="iterSlider" min="5" max="200" value="100">
+        <span class="iter-label" id="iterValue">100</span>
+      </div>
+      <div class="analyze-row">
+        <input type="text" class="ask-input" id="askInput" placeholder="Ask a question about this trace...">
+        <button class="btn" id="btnAsk" disabled>Ask</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let allTraces = [];
+let currentTraceId = null;
+let currentQC = null;
+let currentMessages = null;
+let currentRawJson = null;
+let eventSource = null;
+const analysisCache = {};
+
+// Derive API base from the page URL so it works behind reverse proxies
+const API_BASE = (() => {
+  const path = window.location.pathname.replace(/\/+$/, '');
+  return path || '';
+})();
+
+function apiUrl(endpoint) {
+  return API_BASE + endpoint;
+}
+
+// ── Init ────────────────────────────────────────────────────────
+
+async function init() {
+  try {
+    const resp = await fetch(apiUrl('/api/traces'));
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    allTraces = await resp.json();
+    document.getElementById('headerStats').textContent =
+      `${allTraces.length} traces | ${allTraces.filter(t=>t.issues_count===0).length} clean | ${allTraces.filter(t=>t.issues_count>0).length} with issues`;
+    renderTraceList();
+  } catch(e) {
+    document.getElementById('headerStats').textContent = `Error: ${e.message}`;
+    document.getElementById('traceList').innerHTML =
+      `<div style="padding:16px;color:var(--red);font-size:13px">
+        Failed to load traces: ${e.message}<br><br>
+        <span style="color:var(--text2)">API URL tried: ${apiUrl('/api/traces')}</span>
+      </div>`;
+  }
+}
+
+// ── Trace List ──────────────────────────────────────────────────
+
+function renderTraceList() {
+  const search = document.getElementById('searchInput').value.toLowerCase();
+  const filter = document.getElementById('issueFilter').value;
+  const list = document.getElementById('traceList');
+
+  let filtered = allTraces;
+  if (search) filtered = filtered.filter(t => t.trace_id.includes(search));
+  if (filter === 'clean') filtered = filtered.filter(t => t.issues_count === 0);
+  else if (filter === 'has_issues') filtered = filtered.filter(t => t.issues_count > 0);
+  else if (filter) filtered = filtered.filter(t => t.issues_count > 0); // issue_type filter handled server-side
+
+  list.innerHTML = filtered.map(t => {
+    const ic = t.issues_count;
+    let badgeCls = 'badge-unknown';
+    if (ic === 0) badgeCls = 'badge-0';
+    else if (ic <= 2) badgeCls = 'badge-low';
+    else if (ic > 2) badgeCls = 'badge-high';
+    const active = t.trace_id === currentTraceId ? ' active' : '';
+    return `<div class="trace-item${active}" onclick="selectTrace('${t.trace_id}')">
+      <span class="tid">${t.trace_id}</span>
+      <span class="meta">${t.msg_count}m</span>
+      <span class="badge ${badgeCls}">${ic >= 0 ? ic : '?'}</span>
+    </div>`;
+  }).join('');
+}
+
+document.getElementById('searchInput').addEventListener('input', renderTraceList);
+document.getElementById('issueFilter').addEventListener('change', renderTraceList);
+
+// ── Tabs ────────────────────────────────────────────────────────
+
+function switchTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.getElementById('tabMessages').classList.toggle('active', tab === 'messages');
+  document.getElementById('tabRaw').classList.toggle('active', tab === 'raw');
+  if (tab === 'raw' && currentTraceId && !currentRawJson) fetchRawJson(currentTraceId);
+}
+
+async function fetchRawJson(traceId) {
+  const view = document.getElementById('rawJsonView');
+  view.textContent = 'Loading raw JSON...';
+  try {
+    const resp = await fetch(apiUrl(`/api/traces/${traceId}/raw`));
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    currentRawJson = await resp.json();
+    renderRawJson();
+  } catch(e) {
+    view.textContent = `Error loading raw JSON: ${e.message}`;
+  }
+}
+
+function renderRawJson() {
+  const view = document.getElementById('rawJsonView');
+  if (!currentRawJson) {
+    view.innerHTML = '<div class="empty-state">Select a trace to view raw JSON</div>';
+    return;
+  }
+  view.textContent = JSON.stringify(currentRawJson, null, 2);
+}
+
+// ── Select Trace ────────────────────────────────────────────────
+
+async function selectTrace(traceId) {
+  currentTraceId = traceId;
+  currentRawJson = null;
+  renderTraceList();
+  document.getElementById('btnAnalyze').disabled = false;
+  document.getElementById('btnAsk').disabled = false;
+
+  const info = allTraces.find(t => t.trace_id === traceId);
+  document.getElementById('centerHeader').innerHTML =
+    `<span style="font-family:monospace;font-size:12px">${traceId}</span>
+     <span style="color:var(--text2);font-size:12px">${info?.msg_count || '?'} messages | ${(info?.total_chars||0).toLocaleString()} chars</span>`;
+
+  // Fetch messages and QC in parallel
+  const [msgResp, qcResp] = await Promise.all([
+    fetch(apiUrl(`/api/traces/${traceId}`)),
+    fetch(apiUrl(`/api/traces/${traceId}/qc`)),
+  ]);
+  const msgData = await msgResp.json();
+  currentMessages = msgData.messages || [];
+
+  currentQC = qcResp.ok ? await qcResp.json() : null;
+
+  renderMessages();
+  renderQC();
+  // If raw tab is active, fetch raw JSON immediately
+  if (document.getElementById('tabRaw').classList.contains('active')) fetchRawJson(traceId);
+}
+
+// ── Render Messages ─────────────────────────────────────────────
+
+function renderMessages() {
+  const scroll = document.getElementById('messagesScroll');
+  if (!currentMessages || !currentMessages.length) {
+    scroll.innerHTML = '<div class="empty-state">No messages</div>';
+    return;
+  }
+  const issueMap = {};
+  if (currentQC && currentQC.issues) {
+    currentQC.issues.forEach(iss => {
+      if (iss.message_index != null) {
+        if (!issueMap[iss.message_index]) issueMap[iss.message_index] = [];
+        issueMap[iss.message_index].push(iss);
+      }
+    });
+  }
+
+  scroll.innerHTML = currentMessages.map(m => {
+    const role = m.role || 'unknown';
+    let toolInfo = '';
+    if (m.tool_calls && m.tool_calls.length) {
+      const names = m.tool_calls.map(tc => tc.function?.name || '?').join(', ');
+      toolInfo = `<span class="tool-calls-badge">${names}</span>`;
+    }
+    if (m.tool_call_id) {
+      toolInfo = `<span class="tool-calls-badge">id: ${m.tool_call_id.substring(0,12)}</span>`;
+    }
+    let issueBadge = '';
+    if (issueMap[m.index]) {
+      issueMap[m.index].forEach(iss => {
+        issueBadge += `<span class="issue-marker">${iss.issue_type}</span> `;
+      });
+    }
+    const contentPreview = (m.content || '').substring(0, 120).replace(/</g,'&lt;');
+    const fullContent = (m.content || '').replace(/</g,'&lt;');
+    return `<div class="msg-card role-${role}" id="msg-${m.index}">
+      <div class="msg-header" onclick="this.nextElementSibling.classList.toggle('open')">
+        <span class="msg-idx">#${m.index}</span>
+        <span class="role-tag">${role}</span>
+        ${toolInfo}${issueBadge}
+        <span class="msg-chars">${m.content_len.toLocaleString()} chars</span>
+      </div>
+      <div class="msg-body">${fullContent}</div>
+    </div>`;
+  }).join('');
+}
+
+function scrollToMsg(idx) {
+  const el = document.getElementById(`msg-${idx}`);
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.querySelector('.msg-body').classList.add('open');
+    el.style.boxShadow = '0 0 0 2px var(--accent)';
+    setTimeout(() => el.style.boxShadow = '', 2000);
+  }
+}
+
+// ── Render QC Results ───────────────────────────────────────────
+
+function renderQC() {
+  const el = document.getElementById('analysisContent');
+  let html = '';
+
+  if (currentQC && !currentQC.error) {
+    const ic = currentQC.issues_count || 0;
+    html += `<div class="section">
+      <div class="section-title">QC Result (${ic} issue${ic!==1?'s':''})</div>`;
+
+    if (currentQC.issues && currentQC.issues.length) {
+      currentQC.issues.forEach(iss => {
+        html += `<div class="issue-card">
+          <div class="issue-type">${iss.issue_type || '?'}</div>
+          <div class="issue-summary">${iss.summary || ''}</div>
+          <div class="issue-evidence">${(iss.evidence || '').substring(0, 200)}</div>
+          ${iss.message_index != null ? `<div class="issue-msgidx" onclick="scrollToMsg(${iss.message_index})">@ message #${iss.message_index}</div>` : ''}
+        </div>`;
+      });
+    } else {
+      html += '<div style="color:var(--green);font-size:13px">No issues found</div>';
+    }
+    html += '</div>';
+
+    const assessment = currentQC.overall_assessment || currentQC.response || '';
+    if (assessment) {
+      html += `<div class="section">
+        <div class="section-title">Assessment</div>
+        <div class="overall">${assessment}</div>
+      </div>`;
+    }
+  } else {
+    html += '<div style="color:var(--text2);font-size:13px;margin-bottom:12px">No pre-computed QC result for this trace.</div>';
+  }
+
+  if (currentTraceId && analysisCache[currentTraceId]) {
+    html += `<div class="section" style="border-top:1px solid var(--border);padding-top:12px">
+      <div class="section-title" style="display:flex;align-items:center;gap:8px">
+        Deep Analysis <span class="badge badge-0" style="font-weight:400;text-transform:none">cached</span>
+      </div>
+      <div class="agent-log">${analysisCache[currentTraceId]}</div>
+    </div>`;
+  }
+
+  el.innerHTML = html;
+}
+
+// ── Live Analysis (SSE) ─────────────────────────────────────────
+
+document.getElementById('iterSlider').addEventListener('input', e => {
+  document.getElementById('iterValue').textContent = e.target.value;
+});
+
+document.getElementById('btnAnalyze').addEventListener('click', () => {
+  if (!currentTraceId) return;
+  const maxIter = document.getElementById('iterSlider').value;
+  startSSE(apiUrl(`/api/traces/${currentTraceId}/analyze?max_iterations=${maxIter}`));
+});
+
+document.getElementById('btnAsk').addEventListener('click', () => {
+  if (!currentTraceId) return;
+  const question = document.getElementById('askInput').value.trim() || '这条 trace 存在什么问题？';
+  const maxIter = parseInt(document.getElementById('iterSlider').value);
+  startSSEPost(apiUrl(`/api/traces/${currentTraceId}/ask`), { question, max_iterations: maxIter });
+});
+
+function startSSE(url) {
+  if (eventSource) eventSource.close();
+  const el = document.getElementById('analysisContent');
+  el.innerHTML = '<div class="section"><div class="section-title">Live Agent Session</div><div class="agent-log" id="agentLog"><div class="log-entry log-status">Connecting...</div></div></div>';
+
+  document.getElementById('btnAnalyze').disabled = true;
+  document.getElementById('btnAsk').disabled = true;
+
+  fetch(url).then(resp => {
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    function read() {
+      reader.read().then(({done, value}) => {
+        if (done) {
+          document.getElementById('btnAnalyze').disabled = false;
+          document.getElementById('btnAsk').disabled = false;
+          return;
+        }
+        buffer += decoder.decode(value, {stream: true});
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try { handleSSEEvent(JSON.parse(line.slice(6))); } catch(e) {}
+          }
+        }
+        read();
+      }).catch(err => {
+        const log = document.getElementById('agentLog');
+        if (log) log.innerHTML += `<div class="log-error">Stream read error: ${err.message}</div>`;
+        document.getElementById('btnAnalyze').disabled = false;
+        document.getElementById('btnAsk').disabled = false;
+      });
+    }
+    read();
+  }).catch(err => {
+    const log = document.getElementById('agentLog');
+    if (log) log.innerHTML += `<div class="log-error">Connection failed: ${err.message}<br>URL: ${url}</div>`;
+    document.getElementById('btnAnalyze').disabled = false;
+    document.getElementById('btnAsk').disabled = false;
+  });
+}
+
+function startSSEPost(url, body) {
+  const el = document.getElementById('analysisContent');
+  el.innerHTML = '<div class="section"><div class="section-title">Live Agent Session</div><div class="agent-log" id="agentLog"><div class="log-entry log-status">Connecting...</div></div></div>';
+
+  document.getElementById('btnAnalyze').disabled = true;
+  document.getElementById('btnAsk').disabled = true;
+
+  fetch(url, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  }).then(resp => {
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    function read() {
+      reader.read().then(({done, value}) => {
+        if (done) {
+          document.getElementById('btnAnalyze').disabled = false;
+          document.getElementById('btnAsk').disabled = false;
+          return;
+        }
+        buffer += decoder.decode(value, {stream: true});
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try { handleSSEEvent(JSON.parse(line.slice(6))); } catch(e) {}
+          }
+        }
+        read();
+      }).catch(err => {
+        const log = document.getElementById('agentLog');
+        if (log) log.innerHTML += `<div class="log-error">Stream read error: ${err.message}</div>`;
+        document.getElementById('btnAnalyze').disabled = false;
+        document.getElementById('btnAsk').disabled = false;
+      });
+    }
+    read();
+  }).catch(err => {
+    const log = document.getElementById('agentLog');
+    if (log) log.innerHTML += `<div class="log-error">Connection failed: ${err.message}<br>URL: ${url}</div>`;
+    document.getElementById('btnAnalyze').disabled = false;
+    document.getElementById('btnAsk').disabled = false;
+  });
+}
+
+function esc(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function handleSSEEvent(ev) {
+  const log = document.getElementById('agentLog');
+  if (!log) return;
+
+  if (ev.type === 'status') {
+    log.innerHTML += `<div class="log-status">${esc(ev.message)}</div>`;
+  } else if (ev.type === 'config') {
+    log.innerHTML += `<div class="log-status" style="color:var(--text2)">Model: ${esc(ev.model)} | Max iter: ${ev.max_iterations}</div>`;
+  } else if (ev.type === 'llm_start') {
+    // Build tool results section from previous round
+    let toolResultsHtml = '';
+    if (ev.tool_results && ev.tool_results.length) {
+      toolResultsHtml = `<div class="iter-section"><div class="iter-section-label">Tool Results</div>`;
+      ev.tool_results.forEach(tr => {
+        const idShort = tr.tool_call_id ? tr.tool_call_id.substring(0, 16) : '';
+        toolResultsHtml += `<div style="margin-bottom:4px;font-size:11px;color:var(--text2)">${esc(idShort)}</div>
+          <div class="iter-tool-result">${esc(tr.content)}</div>`;
+      });
+      toolResultsHtml += `</div>`;
+      // Append tool results to the PREVIOUS round's body if it exists
+      const prevRound = document.getElementById(`iter-body-${ev.call - 1}`);
+      if (prevRound) {
+        prevRound.insertAdjacentHTML('beforeend', toolResultsHtml);
+        // Auto-open previous round briefly to show results flowing in
+      }
+    }
+    // Create new round container
+    log.innerHTML += `<div class="iter-round open" id="iter-${ev.call}">
+      <div class="iter-header" onclick="this.parentElement.classList.toggle('open')">
+        <span class="arrow">&#9654;</span>
+        <span class="step">#${ev.call}</span>
+        <span id="iter-summary-${ev.call}">LLM call (${ev.messages_count} msgs)</span>
+        <span class="timing" id="iter-timing-${ev.call}"></span>
+      </div>
+      <div class="iter-body" id="iter-body-${ev.call}">
+        <div class="iter-running" id="iter-running-${ev.call}">Waiting for LLM response...</div>
+      </div>
+    </div>`;
+  } else if (ev.type === 'llm_end') {
+    // Remove running indicator
+    const running = document.getElementById(`iter-running-${ev.call}`);
+    if (running) running.remove();
+
+    const body = document.getElementById(`iter-body-${ev.call}`);
+    const summary = document.getElementById(`iter-summary-${ev.call}`);
+    const timing = document.getElementById(`iter-timing-${ev.call}`);
+
+    if (timing) {
+      timing.innerHTML = `${ev.elapsed}s <span class="tokens">[${ev.prompt_tokens}+${ev.completion_tokens} tok, total: ${ev.total_tokens_so_far||'?'}]</span>`;
+    }
+
+    if (ev.tool_calls && body) {
+      // Show tool calls
+      const names = ev.tool_calls.map(tc => tc.name).join(', ');
+      if (summary) summary.innerHTML = `<span class="tool-name">${esc(names)}</span>`;
+
+      let html = `<div class="iter-section"><div class="iter-section-label">Tool Calls</div>`;
+      ev.tool_calls.forEach(tc => {
+        let prettyArgs = esc(tc.arguments);
+        try { prettyArgs = esc(JSON.stringify(JSON.parse(tc.arguments), null, 2)); } catch(e) {}
+        html += `<div style="margin-bottom:6px">
+          <span class="tool-name" style="font-size:13px;font-weight:600">${esc(tc.name)}</span>
+          <div class="iter-tool-args">${prettyArgs}</div>
+        </div>`;
+      });
+      html += `</div>`;
+      body.insertAdjacentHTML('beforeend', html);
+    } else if (ev.content && body) {
+      // Show text response
+      if (summary) summary.textContent = `text response (${ev.content_len} chars)`;
+      body.insertAdjacentHTML('beforeend',
+        `<div class="iter-section"><div class="iter-section-label">Response</div><div class="iter-content">${esc(ev.content)}</div></div>`);
+    }
+
+    // Collapse previous rounds, keep current open
+    document.querySelectorAll('.iter-round.open').forEach(r => {
+      if (r.id !== `iter-${ev.call}`) r.classList.remove('open');
+    });
+  } else if (ev.type === 'complete') {
+    const r = ev.result || {};
+    const cssClass = ev.budget_exceeded ? 'log-complete" style="background:rgba(210,153,34,0.1);border-color:rgba(210,153,34,0.3)' : 'log-complete';
+    let html = `<div class="${cssClass}">`;
+    if (ev.budget_exceeded) {
+      html += `<div style="margin-bottom:8px"><strong style="color:var(--orange)">Iteration limit reached</strong> — ${ev.llm_calls} LLM calls, ${ev.elapsed}s, ${(ev.total_tokens||0).toLocaleString()} tokens</div>`;
+      html += `<div style="color:var(--text2);font-size:12px;margin-bottom:8px">The agent summarized its partial findings below.</div>`;
+    } else {
+      html += `<div style="margin-bottom:8px"><strong>Complete</strong> — ${ev.llm_calls} LLM calls, ${ev.elapsed}s, ${(ev.total_tokens||0).toLocaleString()} tokens</div>`;
+    }
+    if (r.issues && r.issues.length) {
+      r.issues.forEach(iss => {
+        html += `<div class="issue-card">
+          <div class="issue-type">${esc(iss.issue_type||'?')}</div>
+          <div class="issue-summary">${esc(iss.summary||'')}</div>
+          <div class="issue-evidence">${esc((iss.evidence||'').substring(0,200))}</div>
+          ${iss.message_index!=null ? `<div class="issue-msgidx" onclick="scrollToMsg(${iss.message_index})">@ message #${iss.message_index}</div>` : ''}
+        </div>`;
+      });
+    }
+    if (r.response) html += `<div class="overall" style="margin-top:8px">${esc(r.response)}</div>`;
+    if (r.answer) html += `<div class="overall" style="margin-top:8px">${esc(r.answer)}</div>`;
+    html += `</div>`;
+    log.innerHTML += html;
+
+    if (currentTraceId) analysisCache[currentTraceId] = log.innerHTML;
+    document.getElementById('btnAnalyze').disabled = false;
+    document.getElementById('btnAsk').disabled = false;
+    if (eventSource) { eventSource.close(); eventSource = null; }
+  } else if (ev.type === 'error') {
+    log.innerHTML += `<div class="log-error">${esc(ev.message)}</div>`;
+    if (currentTraceId) analysisCache[currentTraceId] = log.innerHTML;
+    document.getElementById('btnAnalyze').disabled = false;
+    document.getElementById('btnAsk').disabled = false;
+    if (eventSource) { eventSource.close(); eventSource = null; }
+  }
+
+  log.scrollTop = log.scrollHeight;
+}
+
+// ── Boot ────────────────────────────────────────────────────────
+init();
+</script>
+</body>
+</html>
