@@ -23,6 +23,7 @@ os.environ["AHE_HOME"] = os.environ.get(
 TRACE_DIR = Path("/mnt/cfs_bj_mt/workspace/jianmin/datasets/cleaned-20250512")
 BASE_DIR = Path(__file__).parent
 QC_RESULTS_PATH = BASE_DIR / "debug_results" / "qc_results.jsonl"
+ANALYSIS_RESULTS_PATH = BASE_DIR / "debug_results" / "analysis_results.jsonl"
 
 app = FastAPI(title="Agent Trajectory Debugger")
 
@@ -30,6 +31,8 @@ app = FastAPI(title="Agent Trajectory Debugger")
 
 TRACE_INDEX: dict[str, dict] = {}
 QC_RESULTS: dict[str, dict] = {}
+ANALYSIS_RESULTS: dict[str, dict] = {}
+_analysis_lock = threading.Lock()
 
 
 def _load_qc_results():
@@ -39,6 +42,18 @@ def _load_qc_results():
         for line in f:
             r = json.loads(line)
             QC_RESULTS[r["trace_id"]] = r
+
+
+def _load_analysis_results():
+    if not ANALYSIS_RESULTS_PATH.exists():
+        return
+    with open(ANALYSIS_RESULTS_PATH) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            r = json.loads(line)
+            ANALYSIS_RESULTS[r["trace_id"]] = r
 
 
 def _build_trace_index():
@@ -61,14 +76,17 @@ def _build_trace_index():
             "total_chars": total_chars,
             "issues_count": qc.get("issues_count", -1),
             "status": qc.get("status", "unknown"),
+            "has_analysis": trace_id in ANALYSIS_RESULTS,
         }
 
 
 @app.on_event("startup")
 def startup():
     _load_qc_results()
+    _load_analysis_results()
     _build_trace_index()
-    print(f"[web] Loaded {len(QC_RESULTS)} QC results, {len(TRACE_INDEX)} traces")
+    print(f"[web] Loaded {len(QC_RESULTS)} QC results, "
+          f"{len(ANALYSIS_RESULTS)} analysis results, {len(TRACE_INDEX)} traces")
 
 
 # ── Static files ─────────────────────────────────────────────────
@@ -160,9 +178,17 @@ async def get_qc(trace_id: str):
     return qc
 
 
+@app.get("/api/traces/{trace_id}/analysis")
+async def get_analysis(trace_id: str):
+    record = ANALYSIS_RESULTS.get(trace_id)
+    if not record:
+        return JSONResponse({"error": "no analysis result"}, 404)
+    return record
+
+
 # ── Live analysis with SSE ───────────────────────────────────────
 
-def _run_analysis(trace_path: str, mode: str, question: str,
+def _run_analysis(trace_id: str, trace_path: str, mode: str, question: str,
                   max_iterations: int, queue: asyncio.Queue, loop):
     """Run adb analysis in a thread, pushing events to the async queue."""
     import openai
@@ -175,7 +201,10 @@ def _run_analysis(trace_path: str, mode: str, question: str,
     from agent_debugger_core.trace_io import normalize_trace
     from nexau import Agent, AgentConfig
 
+    collected_events = []
+
     def push(event):
+        collected_events.append(event)
         loop.call_soon_threadsafe(queue.put_nowait, event)
 
     call_counter = [0]
@@ -246,7 +275,7 @@ def _run_analysis(trace_path: str, mode: str, question: str,
 
     try:
         push({"type": "status", "message": "Normalizing trace..."})
-        normalized_path, trace_id = normalize_trace(
+        normalized_path, _norm_trace_id = normalize_trace(
             Path(trace_path), trace_type="openai_messages"
         )
 
@@ -325,6 +354,35 @@ def _run_analysis(trace_path: str, mode: str, question: str,
         push({"type": "error", "message": str(e)})
     finally:
         push({"type": "done"})
+        _save_analysis(trace_id, collected_events)
+
+
+def _save_analysis(trace_id: str, events: list):
+    """Persist collected analysis events to disk."""
+    from datetime import datetime, timezone
+    complete_evt = next((e for e in events if e.get("type") == "complete"), None)
+    if not complete_evt:
+        return
+    record = {
+        "trace_id": trace_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "elapsed": complete_evt.get("elapsed"),
+        "llm_calls": complete_evt.get("llm_calls"),
+        "total_tokens": complete_evt.get("total_tokens"),
+        "budget_exceeded": complete_evt.get("budget_exceeded", False),
+        "result": complete_evt.get("result"),
+        "events": events,
+    }
+    with _analysis_lock:
+        ANALYSIS_RESULTS[trace_id] = record
+        ANALYSIS_RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        # Rewrite the file to handle updates for the same trace_id
+        with open(ANALYSIS_RESULTS_PATH, "w") as f:
+            for r in ANALYSIS_RESULTS.values():
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        if trace_id in TRACE_INDEX:
+            TRACE_INDEX[trace_id]["has_analysis"] = True
+    print(f"[web] Saved analysis for {trace_id}")
 
 
 @app.get("/api/traces/{trace_id}/analyze")
@@ -341,7 +399,7 @@ async def analyze_trace(
     loop = asyncio.get_event_loop()
     thread = threading.Thread(
         target=_run_analysis,
-        args=(info["path"], "check", "", max_iterations, queue, loop),
+        args=(trace_id, info["path"], "check", "", max_iterations, queue, loop),
         daemon=True,
     )
     thread.start()
@@ -382,7 +440,7 @@ async def ask_trace(request: Request, trace_id: str):
     loop = asyncio.get_event_loop()
     thread = threading.Thread(
         target=_run_analysis,
-        args=(info["path"], "ask", question, max_iterations, queue, loop),
+        args=(trace_id, info["path"], "ask", question, max_iterations, queue, loop),
         daemon=True,
     )
     thread.start()
