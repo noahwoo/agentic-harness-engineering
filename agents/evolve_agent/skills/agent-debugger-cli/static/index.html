@@ -40,6 +40,9 @@
   .badge-high { background: rgba(248,81,73,0.2); color: var(--red); }
   .badge-unknown { background: var(--bg3); color: var(--text2); }
 
+  .badge-analysis { background: rgba(88,166,255,0.2); color: var(--accent); font-size: 10px; padding: 1px 5px; border-radius: 8px; margin-left: 2px; }
+  .badge-running { background: rgba(210,153,34,0.25); color: var(--orange); animation: pulse 1.5s infinite; }
+
   /* Center panel */
   .panel-center { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
   .panel-center-header { padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--bg2);
@@ -51,10 +54,23 @@
   .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
   .tab-panel { flex: 1; overflow-y: auto; display: none; }
   .tab-panel.active { display: block; }
+  #tabRaw.active { display: flex; flex-direction: column; overflow: hidden; }
   .messages-scroll { padding: 12px 16px; }
+  .raw-search-bar { padding: 6px 16px; background: var(--bg2); border-bottom: 1px solid var(--border);
+                    display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+  .raw-search-bar input { flex: 1; background: var(--bg3); border: 1px solid var(--border); color: var(--text);
+                          padding: 5px 10px; border-radius: 6px; font-size: 13px; font-family: inherit; outline: none; }
+  .raw-search-bar input:focus { border-color: var(--accent); }
+  .raw-search-bar .search-count { font-size: 12px; color: var(--text2); white-space: nowrap; min-width: 60px; text-align: center; }
+  .raw-search-bar button { background: var(--bg3); border: 1px solid var(--border); color: var(--text);
+                          padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 13px; }
+  .raw-search-bar button:hover { background: var(--border); }
+  .raw-search-bar .cb-label { font-size: 12px; color: var(--text2); display: flex; align-items: center; gap: 3px; cursor: pointer; white-space: nowrap; }
   .raw-json-view { padding: 12px 16px; font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
                    font-size: 12px; white-space: pre-wrap; word-break: break-word; color: var(--text2);
-                   line-height: 1.5; }
+                   line-height: 1.5; flex: 1; overflow-y: auto; }
+  .raw-json-view mark { background: rgba(210,153,34,0.35); color: var(--text); border-radius: 2px; padding: 0 1px; }
+  .raw-json-view mark.current { background: rgba(88,166,255,0.5); outline: 1px solid var(--accent); }
   .msg-card { margin-bottom: 8px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
   .msg-header { padding: 6px 12px; display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; }
   .msg-header:hover { filter: brightness(1.1); }
@@ -145,6 +161,12 @@
                               font-size: 12px; color: var(--text); line-height: 1.5; box-shadow: 0 4px 16px rgba(0,0,0,0.5); }
   .tool-call-wrap:hover .tool-tip { display: block; }
 
+  .ctx-menu { position: fixed; z-index: 200; background: var(--bg2); border: 1px solid var(--border);
+              border-radius: 6px; padding: 4px 0; box-shadow: 0 4px 16px rgba(0,0,0,0.5); min-width: 180px; }
+  .ctx-menu-item { padding: 6px 14px; font-size: 13px; color: var(--text); cursor: pointer; display: flex; align-items: center; gap: 8px; }
+  .ctx-menu-item:hover { background: var(--bg3); }
+  .ctx-menu-item .shortcut { margin-left: auto; font-size: 11px; color: var(--text2); }
+
   .empty-state { display: flex; align-items: center; justify-content: center; height: 100%;
                  color: var(--text2); font-size: 14px; }
 
@@ -192,6 +214,14 @@
       </div>
     </div>
     <div class="tab-panel" id="tabRaw">
+      <div class="raw-search-bar" id="rawSearchBar">
+        <input type="text" id="rawSearchInput" placeholder="Search in JSON...">
+        <label class="cb-label"><input type="checkbox" id="rawSearchCase"> Aa</label>
+        <label class="cb-label"><input type="checkbox" id="rawSearchRegex"> .*</label>
+        <span class="search-count" id="rawSearchCount"></span>
+        <button onclick="rawSearchNav(-1)" title="Previous (Shift+Enter)">&#9650;</button>
+        <button onclick="rawSearchNav(1)" title="Next (Enter)">&#9660;</button>
+      </div>
       <div class="raw-json-view" id="rawJsonView">
         <div class="empty-state">Select a trace to view raw JSON</div>
       </div>
@@ -225,8 +255,8 @@ let currentTraceId = null;
 let currentQC = null;
 let currentMessages = null;
 let currentRawJson = null;
-let eventSource = null;
-const analysisCache = {};
+// Per-trace analysis state: { status: 'running'|'complete'|'error'|'saved', events: [], logHtml: '' }
+const analysisState = {};
 
 // Derive API base from the page URL so it works behind reverse proxies
 const API_BASE = (() => {
@@ -278,8 +308,14 @@ function renderTraceList() {
     else if (ic <= 2) badgeCls = 'badge-low';
     else if (ic > 2) badgeCls = 'badge-high';
     const active = t.trace_id === currentTraceId ? ' active' : '';
+    const st = analysisState[t.trace_id];
+    let analysisBadge = '';
+    if (st && st.status === 'running') analysisBadge = '<span class="badge-analysis badge-running">R</span>';
+    else if (t.has_analysis || (st && (st.status === 'complete' || st.status === 'saved')))
+      analysisBadge = `<span class="badge-analysis">${t.has_analysis ? 'A' : 'C'}</span>`;
     return `<div class="trace-item${active}" onclick="selectTrace('${t.trace_id}')">
       <span class="tid">${t.trace_id}</span>
+      ${analysisBadge}
       <span class="meta">${t.msg_count}m</span>
       <span class="badge ${badgeCls}">${ic >= 0 ? ic : '?'}</span>
     </div>`;
@@ -318,7 +354,99 @@ function renderRawJson() {
     return;
   }
   view.textContent = JSON.stringify(currentRawJson, null, 2);
+  rawSearchApply();
 }
+
+// ── Raw JSON Search ────────────────────────────────────────────
+
+let rawSearchIndex = 0;
+let rawSearchMatches = [];
+
+function rawSearchApply() {
+  const view = document.getElementById('rawJsonView');
+  const query = document.getElementById('rawSearchInput').value;
+  const countEl = document.getElementById('rawSearchCount');
+
+  if (!query || !currentRawJson) {
+    // Restore plain text (remove any previous highlights)
+    if (currentRawJson) view.textContent = JSON.stringify(currentRawJson, null, 2);
+    countEl.textContent = '';
+    rawSearchMatches = [];
+    rawSearchIndex = 0;
+    return;
+  }
+
+  const caseSensitive = document.getElementById('rawSearchCase').checked;
+  const useRegex = document.getElementById('rawSearchRegex').checked;
+  const text = JSON.stringify(currentRawJson, null, 2);
+
+  let regex;
+  try {
+    const pattern = useRegex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    regex = new RegExp(`(${pattern})`, caseSensitive ? 'g' : 'gi');
+  } catch(e) {
+    countEl.textContent = 'bad regex';
+    view.textContent = text;
+    rawSearchMatches = [];
+    return;
+  }
+
+  const parts = text.split(regex);
+  if (parts.length <= 1) {
+    view.textContent = text;
+    countEl.textContent = '0 / 0';
+    rawSearchMatches = [];
+    rawSearchIndex = 0;
+    return;
+  }
+
+  // Build highlighted HTML
+  let matchIdx = 0;
+  let html = '';
+  for (let i = 0; i < parts.length; i++) {
+    const escaped = parts[i].replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    if (i % 2 === 1) {
+      html += `<mark data-match="${matchIdx}">${escaped}</mark>`;
+      matchIdx++;
+    } else {
+      html += escaped;
+    }
+  }
+
+  view.innerHTML = html;
+  rawSearchMatches = view.querySelectorAll('mark');
+  const total = rawSearchMatches.length;
+  rawSearchIndex = Math.min(rawSearchIndex, total - 1);
+  if (rawSearchIndex < 0) rawSearchIndex = 0;
+  countEl.textContent = total > 0 ? `${rawSearchIndex + 1} / ${total}` : '0 / 0';
+  rawSearchHighlightCurrent();
+}
+
+function rawSearchHighlightCurrent() {
+  rawSearchMatches.forEach(m => m.classList.remove('current'));
+  if (rawSearchMatches.length > 0 && rawSearchMatches[rawSearchIndex]) {
+    rawSearchMatches[rawSearchIndex].classList.add('current');
+    rawSearchMatches[rawSearchIndex].scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+  const countEl = document.getElementById('rawSearchCount');
+  if (rawSearchMatches.length > 0) {
+    countEl.textContent = `${rawSearchIndex + 1} / ${rawSearchMatches.length}`;
+  }
+}
+
+function rawSearchNav(dir) {
+  if (!rawSearchMatches.length) return;
+  rawSearchIndex = (rawSearchIndex + dir + rawSearchMatches.length) % rawSearchMatches.length;
+  rawSearchHighlightCurrent();
+}
+
+document.getElementById('rawSearchInput').addEventListener('input', () => { rawSearchIndex = 0; rawSearchApply(); });
+document.getElementById('rawSearchCase').addEventListener('change', () => { rawSearchIndex = 0; rawSearchApply(); });
+document.getElementById('rawSearchRegex').addEventListener('change', () => { rawSearchIndex = 0; rawSearchApply(); });
+document.getElementById('rawSearchInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); rawSearchNav(e.shiftKey ? -1 : 1); }
+  if (e.key === 'Escape') { e.target.value = ''; rawSearchApply(); }
+});
 
 // ── Select Trace ────────────────────────────────────────────────
 
@@ -334,18 +462,26 @@ async function selectTrace(traceId) {
     `<span style="font-family:monospace;font-size:12px">${traceId}</span>
      <span style="color:var(--text2);font-size:12px">${info?.msg_count || '?'} messages | ${(info?.total_chars||0).toLocaleString()} chars</span>`;
 
-  // Fetch messages and QC in parallel
-  const [msgResp, qcResp] = await Promise.all([
+  // Fetch messages, QC, and saved analysis in parallel
+  const [msgResp, qcResp, analysisResp] = await Promise.all([
     fetch(apiUrl(`/api/traces/${traceId}`)),
     fetch(apiUrl(`/api/traces/${traceId}/qc`)),
+    fetch(apiUrl(`/api/traces/${traceId}/analysis`)),
   ]);
   const msgData = await msgResp.json();
   currentMessages = msgData.messages || [];
 
   currentQC = qcResp.ok ? await qcResp.json() : null;
 
+  // If server has a saved analysis, replay its events into analysisState
+  if (analysisResp.ok && !analysisState[traceId]) {
+    const saved = await analysisResp.json();
+    replaySavedAnalysis(traceId, saved);
+  }
+
   renderMessages();
   renderQC();
+  updateAnalysisButtons();
   // If raw tab is active, fetch raw JSON immediately
   if (document.getElementById('tabRaw').classList.contains('active')) fetchRawJson(traceId);
 }
@@ -399,6 +535,7 @@ function renderMessages() {
 }
 
 function scrollToMsg(idx) {
+  switchTab('messages');
   const el = document.getElementById(`msg-${idx}`);
   if (el) {
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -444,16 +581,42 @@ function renderQC() {
     html += '<div style="color:var(--text2);font-size:13px;margin-bottom:12px">No pre-computed QC result for this trace.</div>';
   }
 
-  if (currentTraceId && analysisCache[currentTraceId]) {
-    html += `<div class="section" style="border-top:1px solid var(--border);padding-top:12px">
-      <div class="section-title" style="display:flex;align-items:center;gap:8px">
-        Deep Analysis <span class="badge badge-0" style="font-weight:400;text-transform:none">cached</span>
-      </div>
-      <div class="agent-log">${analysisCache[currentTraceId]}</div>
-    </div>`;
+  if (currentTraceId && analysisState[currentTraceId]) {
+    const st = analysisState[currentTraceId];
+    if (st.status === 'running') {
+      html += `<div class="section" style="border-top:1px solid var(--border);padding-top:12px">
+        <div class="section-title" style="display:flex;align-items:center;gap:8px">
+          Deep Analysis <span class="badge badge-0 badge-running" style="font-weight:400;text-transform:none">running</span>
+        </div>
+        <div class="agent-log" id="agentLog"></div>
+      </div>`;
+    } else if (st.logHtml) {
+      const info = allTraces.find(t => t.trace_id === currentTraceId);
+      const isSaved = info && info.has_analysis;
+      const badgeLabel = st.status === 'saved' || isSaved ? 'saved' : 'cached';
+      const badgeStyle = (st.status === 'saved' || isSaved) ? 'background:rgba(63,185,80,0.2);color:var(--green)' : '';
+      html += `<div class="section" style="border-top:1px solid var(--border);padding-top:12px">
+        <div class="section-title" style="display:flex;align-items:center;gap:8px">
+          Deep Analysis <span class="badge badge-0" style="font-weight:400;text-transform:none;${badgeStyle}">${badgeLabel}</span>
+        </div>
+        <div class="agent-log">${st.logHtml}</div>
+      </div>`;
+    }
   }
 
   el.innerHTML = html;
+
+  // If running, replay only un-rendered events into the live log
+  if (currentTraceId && analysisState[currentTraceId] && analysisState[currentTraceId].status === 'running') {
+    const st = analysisState[currentTraceId];
+    const eventsToReplay = st.events;
+    for (let i = 0; i < eventsToReplay.length; i++) {
+      const ev = eventsToReplay[i];
+      if (ev.type === 'done') continue;
+      handleSSEEvent(ev, currentTraceId);
+    }
+    st.renderedCount = eventsToReplay.length;
+  }
 }
 
 // ── Live Analysis (SSE) ─────────────────────────────────────────
@@ -465,25 +628,39 @@ document.getElementById('iterSlider').addEventListener('input', e => {
 document.getElementById('btnAnalyze').addEventListener('click', () => {
   if (!currentTraceId) return;
   const maxIter = document.getElementById('iterSlider').value;
-  startSSE(apiUrl(`/api/traces/${currentTraceId}/analyze?max_iterations=${maxIter}`));
+  startAnalysisStream(currentTraceId, apiUrl(`/api/traces/${currentTraceId}/analyze?max_iterations=${maxIter}`));
 });
 
 document.getElementById('btnAsk').addEventListener('click', () => {
   if (!currentTraceId) return;
   const question = document.getElementById('askInput').value.trim() || '这条 trace 存在什么问题？';
   const maxIter = parseInt(document.getElementById('iterSlider').value);
-  startSSEPost(apiUrl(`/api/traces/${currentTraceId}/ask`), { question, max_iterations: maxIter });
+  startAnalysisStream(currentTraceId, apiUrl(`/api/traces/${currentTraceId}/ask`), {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ question, max_iterations: maxIter }),
+  });
 });
 
-function startSSE(url) {
-  if (eventSource) eventSource.close();
-  const el = document.getElementById('analysisContent');
-  el.innerHTML = '<div class="section"><div class="section-title">Live Agent Session</div><div class="agent-log" id="agentLog"><div class="log-entry log-status">Connecting...</div></div></div>';
+function updateAnalysisButtons() {
+  const st = currentTraceId ? analysisState[currentTraceId] : null;
+  const running = st && st.status === 'running';
+  document.getElementById('btnAnalyze').disabled = !currentTraceId || running;
+  document.getElementById('btnAsk').disabled = !currentTraceId || running;
+}
 
-  document.getElementById('btnAnalyze').disabled = true;
-  document.getElementById('btnAsk').disabled = true;
+function startAnalysisStream(traceId, url, fetchOpts) {
+  analysisState[traceId] = { status: 'running', events: [], logHtml: '', renderedCount: 0 };
+  renderTraceList();
 
-  fetch(url).then(resp => {
+  // If this is the currently viewed trace, show the live log
+  if (traceId === currentTraceId) {
+    renderQC();
+  }
+  updateAnalysisButtons();
+
+  const opts = fetchOpts || {};
+  fetch(url, opts).then(resp => {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
@@ -491,8 +668,7 @@ function startSSE(url) {
     function read() {
       reader.read().then(({done, value}) => {
         if (done) {
-          document.getElementById('btnAnalyze').disabled = false;
-          document.getElementById('btnAsk').disabled = false;
+          finalizeStream(traceId);
           return;
         }
         buffer += decoder.decode(value, {stream: true});
@@ -500,88 +676,86 @@ function startSSE(url) {
         buffer = lines.pop();
         for (const line of lines) {
           if (line.startsWith('data: ')) {
-            try { handleSSEEvent(JSON.parse(line.slice(6))); } catch(e) {}
+            try {
+              const ev = JSON.parse(line.slice(6));
+              const st = analysisState[traceId];
+              if (!st) continue;
+              st.events.push(ev);
+              // Only render to DOM if this trace is currently viewed and event is new
+              const evIdx = st.events.length - 1;
+              if (traceId === currentTraceId && document.getElementById('agentLog') && evIdx >= st.renderedCount) {
+                handleSSEEvent(ev, traceId);
+                st.renderedCount = st.events.length;
+              }
+              if (ev.type === 'complete' || ev.type === 'error') finalizeStream(traceId, ev);
+            } catch(e) {}
           }
         }
         read();
       }).catch(err => {
-        const log = document.getElementById('agentLog');
-        if (log) log.innerHTML += `<div class="log-error">Stream read error: ${err.message}</div>`;
-        document.getElementById('btnAnalyze').disabled = false;
-        document.getElementById('btnAsk').disabled = false;
+        if (traceId === currentTraceId) {
+          const log = document.getElementById('agentLog');
+          if (log) log.innerHTML += `<div class="log-error">Stream read error: ${err.message}</div>`;
+        }
+        finalizeStream(traceId);
       });
     }
     read();
   }).catch(err => {
-    const log = document.getElementById('agentLog');
-    if (log) log.innerHTML += `<div class="log-error">Connection failed: ${err.message}<br>URL: ${url}</div>`;
-    document.getElementById('btnAnalyze').disabled = false;
-    document.getElementById('btnAsk').disabled = false;
+    if (traceId === currentTraceId) {
+      const log = document.getElementById('agentLog');
+      if (log) log.innerHTML += `<div class="log-error">Connection failed: ${err.message}</div>`;
+    }
+    if (analysisState[traceId]) analysisState[traceId].status = 'error';
+    updateAnalysisButtons();
+    renderTraceList();
   });
 }
 
-function startSSEPost(url, body) {
-  const el = document.getElementById('analysisContent');
-  el.innerHTML = '<div class="section"><div class="section-title">Live Agent Session</div><div class="agent-log" id="agentLog"><div class="log-entry log-status">Connecting...</div></div></div>';
+function finalizeStream(traceId, ev) {
+  const st = analysisState[traceId];
+  if (!st || st.status !== 'running') return;
+  st.status = (ev && ev.type === 'error') ? 'error' : 'complete';
 
-  document.getElementById('btnAnalyze').disabled = true;
-  document.getElementById('btnAsk').disabled = true;
-
-  fetch(url, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body),
-  }).then(resp => {
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    function read() {
-      reader.read().then(({done, value}) => {
-        if (done) {
-          document.getElementById('btnAnalyze').disabled = false;
-          document.getElementById('btnAsk').disabled = false;
-          return;
-        }
-        buffer += decoder.decode(value, {stream: true});
-        const lines = buffer.split('\n');
-        buffer = lines.pop();
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try { handleSSEEvent(JSON.parse(line.slice(6))); } catch(e) {}
-          }
-        }
-        read();
-      }).catch(err => {
-        const log = document.getElementById('agentLog');
-        if (log) log.innerHTML += `<div class="log-error">Stream read error: ${err.message}</div>`;
-        document.getElementById('btnAnalyze').disabled = false;
-        document.getElementById('btnAsk').disabled = false;
-      });
-    }
-    read();
-  }).catch(err => {
+  // Snapshot logHtml
+  if (traceId === currentTraceId) {
     const log = document.getElementById('agentLog');
-    if (log) log.innerHTML += `<div class="log-error">Connection failed: ${err.message}<br>URL: ${url}</div>`;
-    document.getElementById('btnAnalyze').disabled = false;
-    document.getElementById('btnAsk').disabled = false;
-  });
+    if (log) st.logHtml = log.innerHTML;
+  } else {
+    // Replay into temp container to get HTML
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = '<div class="agent-log" id="agentLog"></div>';
+    document.body.appendChild(tempDiv);
+    for (const e of st.events) {
+      if (e.type === 'done') continue;
+      handleSSEEvent(e, traceId);
+    }
+    const log = tempDiv.querySelector('#agentLog');
+    if (log) st.logHtml = log.innerHTML;
+    document.body.removeChild(tempDiv);
+  }
+
+  const traceInfo = allTraces.find(t => t.trace_id === traceId);
+  if (traceInfo) traceInfo.has_analysis = true;
+  updateAnalysisButtons();
+  renderTraceList();
 }
 
 function esc(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-function handleSSEEvent(ev) {
+function handleSSEEvent(ev, traceId) {
   const log = document.getElementById('agentLog');
   if (!log) return;
+
+  const pfx = traceId ? traceId.slice(0, 8) + '-' : '';
 
   if (ev.type === 'status') {
     log.innerHTML += `<div class="log-status">${esc(ev.message)}</div>`;
   } else if (ev.type === 'config') {
     log.innerHTML += `<div class="log-status" style="color:var(--text2)">Model: ${esc(ev.model)} | Max iter: ${ev.max_iterations}</div>`;
   } else if (ev.type === 'llm_start') {
-    // Build tool results section from previous round
     let toolResultsHtml = '';
     if (ev.tool_results && ev.tool_results.length) {
       toolResultsHtml = `<div class="iter-section"><div class="iter-section-label">Tool Results</div>`;
@@ -591,43 +765,35 @@ function handleSSEEvent(ev) {
           <div class="iter-tool-result">${esc(tr.content)}</div>`;
       });
       toolResultsHtml += `</div>`;
-      // Append tool results to the PREVIOUS round's body if it exists
-      const prevRound = document.getElementById(`iter-body-${ev.call - 1}`);
-      if (prevRound) {
-        prevRound.insertAdjacentHTML('beforeend', toolResultsHtml);
-        // Auto-open previous round briefly to show results flowing in
-      }
+      const prevRound = document.getElementById(`${pfx}iter-body-${ev.call - 1}`);
+      if (prevRound) prevRound.insertAdjacentHTML('beforeend', toolResultsHtml);
     }
-    // Create new round container
-    log.innerHTML += `<div class="iter-round open" id="iter-${ev.call}">
+    log.innerHTML += `<div class="iter-round open" id="${pfx}iter-${ev.call}">
       <div class="iter-header" onclick="this.parentElement.classList.toggle('open')">
         <span class="arrow">&#9654;</span>
         <span class="step">#${ev.call}</span>
-        <span id="iter-summary-${ev.call}">LLM call (${ev.messages_count} msgs)</span>
-        <span class="timing" id="iter-timing-${ev.call}"></span>
+        <span id="${pfx}iter-summary-${ev.call}">LLM call (${ev.messages_count} msgs)</span>
+        <span class="timing" id="${pfx}iter-timing-${ev.call}"></span>
       </div>
-      <div class="iter-body" id="iter-body-${ev.call}">
-        <div class="iter-running" id="iter-running-${ev.call}">Waiting for LLM response...</div>
+      <div class="iter-body" id="${pfx}iter-body-${ev.call}">
+        <div class="iter-running" id="${pfx}iter-running-${ev.call}">Waiting for LLM response...</div>
       </div>
     </div>`;
   } else if (ev.type === 'llm_end') {
-    // Remove running indicator
-    const running = document.getElementById(`iter-running-${ev.call}`);
+    const running = document.getElementById(`${pfx}iter-running-${ev.call}`);
     if (running) running.remove();
 
-    const body = document.getElementById(`iter-body-${ev.call}`);
-    const summary = document.getElementById(`iter-summary-${ev.call}`);
-    const timing = document.getElementById(`iter-timing-${ev.call}`);
+    const body = document.getElementById(`${pfx}iter-body-${ev.call}`);
+    const summary = document.getElementById(`${pfx}iter-summary-${ev.call}`);
+    const timing = document.getElementById(`${pfx}iter-timing-${ev.call}`);
 
     if (timing) {
       timing.innerHTML = `${ev.elapsed}s <span class="tokens">[${ev.prompt_tokens}+${ev.completion_tokens} tok, total: ${ev.total_tokens_so_far||'?'}]</span>`;
     }
 
     if (ev.tool_calls && body) {
-      // Show tool calls
       const names = ev.tool_calls.map(tc => tc.name).join(', ');
       if (summary) summary.innerHTML = `<span class="tool-name">${esc(names)}</span>`;
-
       let html = `<div class="iter-section"><div class="iter-section-label">Tool Calls</div>`;
       ev.tool_calls.forEach(tc => {
         let prettyArgs = esc(tc.arguments);
@@ -640,15 +806,15 @@ function handleSSEEvent(ev) {
       html += `</div>`;
       body.insertAdjacentHTML('beforeend', html);
     } else if (ev.content && body) {
-      // Show text response
       if (summary) summary.textContent = `text response (${ev.content_len} chars)`;
       body.insertAdjacentHTML('beforeend',
         `<div class="iter-section"><div class="iter-section-label">Response</div><div class="iter-content">${esc(ev.content)}</div></div>`);
     }
 
     // Collapse previous rounds, keep current open
-    document.querySelectorAll('.iter-round.open').forEach(r => {
-      if (r.id !== `iter-${ev.call}`) r.classList.remove('open');
+    const parent = log;
+    parent.querySelectorAll('.iter-round.open').forEach(r => {
+      if (r.id !== `${pfx}iter-${ev.call}`) r.classList.remove('open');
     });
   } else if (ev.type === 'complete') {
     const r = ev.result || {};
@@ -674,21 +840,88 @@ function handleSSEEvent(ev) {
     if (r.answer) html += `<div class="overall" style="margin-top:8px">${esc(r.answer)}</div>`;
     html += `</div>`;
     log.innerHTML += html;
-
-    if (currentTraceId) analysisCache[currentTraceId] = log.innerHTML;
-    document.getElementById('btnAnalyze').disabled = false;
-    document.getElementById('btnAsk').disabled = false;
-    if (eventSource) { eventSource.close(); eventSource = null; }
   } else if (ev.type === 'error') {
     log.innerHTML += `<div class="log-error">${esc(ev.message)}</div>`;
-    if (currentTraceId) analysisCache[currentTraceId] = log.innerHTML;
-    document.getElementById('btnAnalyze').disabled = false;
-    document.getElementById('btnAsk').disabled = false;
-    if (eventSource) { eventSource.close(); eventSource = null; }
   }
 
   log.scrollTop = log.scrollHeight;
 }
+
+// ── Replay saved analysis ──────────────────────────────────────
+
+function replaySavedAnalysis(traceId, saved) {
+  const events = saved.events || [];
+  if (!events.length) return;
+
+  // Create a temporary hidden container to replay events into
+  const tempDiv = document.createElement('div');
+  tempDiv.innerHTML = '<div class="agent-log" id="agentLog"></div>';
+  document.body.appendChild(tempDiv);
+
+  for (const ev of events) {
+    if (ev.type === 'done') continue;
+    handleSSEEvent(ev, traceId);
+  }
+
+  const log = tempDiv.querySelector('#agentLog');
+  const logHtml = log ? log.innerHTML : '';
+  document.body.removeChild(tempDiv);
+
+  analysisState[traceId] = { status: 'saved', events, logHtml };
+}
+
+// ── Context menu for text selection ────────────────────────────
+
+let ctxMenu = null;
+
+function showCtxMenu(x, y, text) {
+  hideCtxMenu();
+  ctxMenu = document.createElement('div');
+  ctxMenu.className = 'ctx-menu';
+  const truncated = text.length > 30 ? text.substring(0, 30) + '...' : text;
+  ctxMenu.innerHTML = `<div class="ctx-menu-item" data-action="search-raw">Search in Raw JSON<span class="shortcut">"${esc(truncated)}"</span></div>`;
+  ctxMenu.style.left = x + 'px';
+  ctxMenu.style.top = y + 'px';
+  document.body.appendChild(ctxMenu);
+
+  // Adjust if overflows viewport
+  const rect = ctxMenu.getBoundingClientRect();
+  if (rect.right > window.innerWidth) ctxMenu.style.left = (window.innerWidth - rect.width - 8) + 'px';
+  if (rect.bottom > window.innerHeight) ctxMenu.style.top = (window.innerHeight - rect.height - 8) + 'px';
+
+  ctxMenu.querySelector('[data-action="search-raw"]').addEventListener('click', () => {
+    hideCtxMenu();
+    switchTab('raw');
+    if (!currentRawJson) {
+      fetchRawJson(currentTraceId).then(() => {
+        document.getElementById('rawSearchInput').value = text;
+        rawSearchIndex = 0;
+        rawSearchApply();
+      });
+    } else {
+      document.getElementById('rawSearchInput').value = text;
+      rawSearchIndex = 0;
+      rawSearchApply();
+    }
+  });
+}
+
+function hideCtxMenu() {
+  if (ctxMenu) { ctxMenu.remove(); ctxMenu = null; }
+}
+
+document.getElementById('tabMessages').addEventListener('mouseup', e => {
+  const sel = window.getSelection();
+  const text = sel ? sel.toString().trim() : '';
+  if (text.length > 0 && text.length < 500) {
+    setTimeout(() => showCtxMenu(e.clientX, e.clientY, text), 10);
+  }
+});
+
+document.addEventListener('mousedown', e => {
+  if (ctxMenu && !ctxMenu.contains(e.target)) hideCtxMenu();
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') hideCtxMenu(); });
 
 // ── Boot ────────────────────────────────────────────────────────
 init();
