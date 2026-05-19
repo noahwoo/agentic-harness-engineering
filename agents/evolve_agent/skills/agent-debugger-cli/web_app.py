@@ -20,7 +20,11 @@ os.environ["AHE_HOME"] = os.environ.get(
     "/mnt/cfs_bj_mt/workspace/jianmin/git/fork/agentic-harness-engineering",
 )
 
-TRACE_DIR = Path("/mnt/cfs_bj_mt/workspace/jianmin/datasets/cleaned-20250512")
+TRACE_DIRS = [
+    Path("/mnt/cfs_bj_mt/workspace/jianmin/datasets/cleaned-20250512"),
+    Path("/mnt/cfs_bj_mt/workspace/jianmin/datasets/cleaned-20260518"),
+]
+TRACE_DIR = TRACE_DIRS[0]
 BASE_DIR = Path(__file__).parent
 QC_RESULTS_PATH = BASE_DIR / "debug_results" / "qc_results.jsonl"
 ANALYSIS_RESULTS_PATH = BASE_DIR / "debug_results" / "analysis_results.jsonl"
@@ -80,6 +84,29 @@ def _load_annotations():
             ANNOTATIONS[r["trace_id"]] = r
 
 
+def _extract_env_os(msgs) -> str:
+    """Extract OS platform from <env> block in system prompt."""
+    import re
+    for m in msgs:
+        if m.get("role") == "system":
+            content = str(m.get("content", ""))
+            match = re.search(r"(?:操作系统平台|Platform):\s*(\S+)", content)
+            if match:
+                v = match.group(1).lower()
+                if "win" in v:
+                    return "win32"
+                if "darwin" in v or "mac" in v:
+                    return "mac"
+                if "linux" in v:
+                    wd = re.search(r"(?:工作目录|Working directory):\s*(\S+)", content)
+                    if wd and wd.group(1).startswith("/Users/"):
+                        return "mac"
+                    return "linux"
+                return v
+            break
+    return "unknown"
+
+
 def _build_trace_index():
     for p in sorted(TRACE_DIR.glob("*.jsonl")):
         trace_id = p.stem
@@ -89,11 +116,16 @@ def _build_trace_index():
             msgs = data.get("messages", [])
             msg_count = len(msgs)
             total_chars = sum(len(str(m.get("content", ""))) for m in msgs)
+            env_os = _extract_env_os(msgs)
         except Exception:
             msg_count = 0
             total_chars = 0
+            env_os = "unknown"
         qc = QC_RESULTS.get(trace_id, {})
         ann = ANNOTATIONS.get(trace_id, {})
+        tags = list(ann.get("tags", []))
+        if env_os not in tags:
+            tags.append(env_os)
         TRACE_INDEX[trace_id] = {
             "trace_id": trace_id,
             "path": str(p),
@@ -102,8 +134,9 @@ def _build_trace_index():
             "issues_count": qc.get("issues_count", -1),
             "status": qc.get("status", "unknown"),
             "has_analysis": trace_id in ANALYSIS_RESULTS,
-            "tags": ann.get("tags", []),
+            "tags": tags,
             "description": ann.get("description", ""),
+            "env_os": env_os,
         }
 
 
@@ -135,6 +168,24 @@ async def index():
 
 
 # ── API endpoints ────────────────────────────────────────────────
+
+@app.get("/api/datasets")
+async def list_datasets():
+    global TRACE_DIR
+    return [{"path": str(d), "name": d.name, "active": d == TRACE_DIR} for d in TRACE_DIRS]
+
+
+@app.post("/api/datasets/switch")
+async def switch_dataset(request: Request):
+    global TRACE_DIR
+    body = await request.json()
+    path = Path(body.get("path", ""))
+    if path not in TRACE_DIRS:
+        return JSONResponse({"error": "invalid dataset path"}, 400)
+    TRACE_DIR = path
+    TRACE_INDEX.clear()
+    _build_trace_index()
+    return {"active": str(TRACE_DIR), "trace_count": len(TRACE_INDEX)}
 
 @app.get("/api/traces")
 async def list_traces(
