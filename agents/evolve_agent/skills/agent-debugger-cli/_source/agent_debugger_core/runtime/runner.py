@@ -16,6 +16,7 @@ AGENT_CONFIG_PATH = RUNTIME_DIR / "agent_config.yaml"
 
 ALLOWED_ISSUE_TYPES = {"工具错误", "幻觉", "循环", "不合规", "截断"}
 BUDGET_MARKER = "[Note: Maximum iteration limit reached]"
+_BUDGET_MARKERS = (BUDGET_MARKER, "[Error: Maximum iteration limit reached.]")
 
 
 class RunnerError(Exception):
@@ -100,8 +101,10 @@ def _parse_run_output(run_output: Any) -> dict:
     if not s:
         raise BudgetExceeded("")
 
-    if BUDGET_MARKER in s:
-        raise BudgetExceeded(s.replace(BUDGET_MARKER, "").strip())
+    if any(marker in s for marker in _BUDGET_MARKERS):
+        for marker in _BUDGET_MARKERS:
+            s = s.replace(marker, "")
+        raise BudgetExceeded(s.strip())
 
     # nexau.Agent.run() may return a plain JSON string OR a JSON-encoded
     # JSON string (double-encoded). Unwrap up to 2 times until we see an object.
