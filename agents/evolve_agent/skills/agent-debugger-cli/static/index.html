@@ -198,6 +198,7 @@
 <body>
 <header>
   <h1>Agent Trajectory Debugger</h1>
+  <select id="datasetSelect" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px;"></select>
   <span class="stats" id="headerStats">Loading...</span>
 </header>
 <div class="container">
@@ -217,6 +218,13 @@
       </select>
       <select id="tagFilter">
         <option value="">Tags</option>
+      </select>
+      <select id="envFilter">
+        <option value="">Env</option>
+        <option value="linux">linux</option>
+        <option value="win32">win32</option>
+        <option value="mac">mac</option>
+        <option value="unknown">unknown</option>
       </select>
     </div>
     <div class="trace-list" id="traceList"></div>
@@ -293,8 +301,23 @@ function apiUrl(endpoint) {
 
 // ── Init ────────────────────────────────────────────────────────
 
+async function loadDatasets() {
+  const sel = document.getElementById('datasetSelect');
+  const resp = await fetch(apiUrl('/api/datasets'));
+  const datasets = await resp.json();
+  sel.innerHTML = datasets.map(d => `<option value="${d.path}" ${d.active?'selected':''}>${d.name}</option>`).join('');
+  sel.onchange = async () => {
+    sel.disabled = true;
+    document.getElementById('headerStats').textContent = 'Switching dataset...';
+    const r = await fetch(apiUrl('/api/datasets/switch'), {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path:sel.value})});
+    sel.disabled = false;
+    if (r.ok) await init();
+  };
+}
+
 async function init() {
   try {
+    await loadDatasets();
     const resp = await fetch(apiUrl('/api/traces'));
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     allTraces = await resp.json();
@@ -318,6 +341,7 @@ function renderTraceList() {
   const search = document.getElementById('searchInput').value.toLowerCase();
   const filter = document.getElementById('issueFilter').value;
   const tagFilter = document.getElementById('tagFilter').value;
+  const envFilter = document.getElementById('envFilter').value;
   const list = document.getElementById('traceList');
 
   let filtered = allTraces;
@@ -326,6 +350,7 @@ function renderTraceList() {
   else if (filter === 'has_issues') filtered = filtered.filter(t => t.issues_count > 0);
   else if (filter) filtered = filtered.filter(t => t.issues_count > 0);
   if (tagFilter) filtered = filtered.filter(t => (t.tags || []).includes(tagFilter));
+  if (envFilter) filtered = filtered.filter(t => t.env_os === envFilter);
 
   list.innerHTML = filtered.map(t => {
     const ic = t.issues_count;
@@ -357,6 +382,7 @@ function renderTraceList() {
 document.getElementById('searchInput').addEventListener('input', renderTraceList);
 document.getElementById('issueFilter').addEventListener('change', renderTraceList);
 document.getElementById('tagFilter').addEventListener('change', renderTraceList);
+document.getElementById('envFilter').addEventListener('change', renderTraceList);
 
 // ── Tabs ────────────────────────────────────────────────────────
 
