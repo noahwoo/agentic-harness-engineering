@@ -43,6 +43,25 @@
   .badge-analysis { background: rgba(88,166,255,0.2); color: var(--accent); font-size: 10px; padding: 1px 5px; border-radius: 8px; margin-left: 2px; }
   .badge-running { background: rgba(210,153,34,0.25); color: var(--orange); animation: pulse 1.5s infinite; }
 
+  /* Annotations */
+  .trace-item-wrap { display: flex; flex-direction: column; gap: 2px; flex: 1; overflow: hidden; }
+  .trace-tags { display: flex; flex-wrap: wrap; gap: 3px; }
+  .tag-chip { font-size: 10px; padding: 0 5px; border-radius: 6px; background: rgba(188,140,255,0.2); color: var(--purple);
+              white-space: nowrap; line-height: 16px; }
+  .tag-chip-rm { cursor: pointer; margin-left: 2px; opacity: 0.7; }
+  .tag-chip-rm:hover { opacity: 1; }
+  .annotation-section { border-bottom: 1px solid var(--border); padding: 10px 16px; background: var(--bg2);
+                        position: sticky; top: 0; z-index: 10; }
+  .annotation-section .section-title { margin-bottom: 6px; }
+  .ann-tags { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-bottom: 6px; }
+  .ann-tag-input { background: var(--bg3); border: 1px solid var(--border); color: var(--text);
+                   padding: 3px 8px; border-radius: 6px; font-size: 12px; width: 100px; outline: none; }
+  .ann-tag-input:focus { border-color: var(--accent); width: 140px; }
+  .ann-desc { width: 100%; background: var(--bg3); border: 1px solid var(--border); color: var(--text);
+              padding: 6px 8px; border-radius: 6px; font-size: 12px; font-family: inherit; resize: vertical;
+              min-height: 36px; max-height: 100px; outline: none; }
+  .ann-desc:focus { border-color: var(--accent); }
+
   /* Center panel */
   .panel-center { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
   .panel-center-header { padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--bg2);
@@ -94,7 +113,8 @@
   /* Right panel */
   .panel-right { width: 400px; border-left: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; }
   .panel-right-header { padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--bg2); font-size: 14px; font-weight: 600; }
-  .panel-right-content { flex: 1; overflow-y: auto; padding: 12px 16px; }
+  .panel-right-content { flex: 1; overflow-y: auto; padding: 0; }
+  .panel-right-body { padding: 12px 16px; }
   .section { margin-bottom: 16px; }
   .section-title { font-size: 13px; font-weight: 600; color: var(--text2); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
   .issue-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin-bottom: 8px; }
@@ -195,6 +215,9 @@
         <option value="格式错误">格式错误</option>
         <option value="幻觉">幻觉</option>
       </select>
+      <select id="tagFilter">
+        <option value="">Tags</option>
+      </select>
     </div>
     <div class="trace-list" id="traceList"></div>
   </div>
@@ -278,6 +301,7 @@ async function init() {
     document.getElementById('headerStats').textContent =
       `${allTraces.length} traces | ${allTraces.filter(t=>t.issues_count===0).length} clean | ${allTraces.filter(t=>t.issues_count>0).length} with issues`;
     renderTraceList();
+    refreshTagFilter();
   } catch(e) {
     document.getElementById('headerStats').textContent = `Error: ${e.message}`;
     document.getElementById('traceList').innerHTML =
@@ -293,13 +317,15 @@ async function init() {
 function renderTraceList() {
   const search = document.getElementById('searchInput').value.toLowerCase();
   const filter = document.getElementById('issueFilter').value;
+  const tagFilter = document.getElementById('tagFilter').value;
   const list = document.getElementById('traceList');
 
   let filtered = allTraces;
   if (search) filtered = filtered.filter(t => t.trace_id.includes(search));
   if (filter === 'clean') filtered = filtered.filter(t => t.issues_count === 0);
   else if (filter === 'has_issues') filtered = filtered.filter(t => t.issues_count > 0);
-  else if (filter) filtered = filtered.filter(t => t.issues_count > 0); // issue_type filter handled server-side
+  else if (filter) filtered = filtered.filter(t => t.issues_count > 0);
+  if (tagFilter) filtered = filtered.filter(t => (t.tags || []).includes(tagFilter));
 
   list.innerHTML = filtered.map(t => {
     const ic = t.issues_count;
@@ -313,8 +339,14 @@ function renderTraceList() {
     if (st && st.status === 'running') analysisBadge = '<span class="badge-analysis badge-running">R</span>';
     else if (t.has_analysis || (st && (st.status === 'complete' || st.status === 'saved')))
       analysisBadge = `<span class="badge-analysis">${t.has_analysis ? 'A' : 'C'}</span>`;
-    return `<div class="trace-item${active}" onclick="selectTrace('${t.trace_id}')">
-      <span class="tid">${t.trace_id}</span>
+    const tags = t.tags || [];
+    const tagsHtml = tags.length ? `<div class="trace-tags">${tags.map(tg => `<span class="tag-chip">${esc(tg)}</span>`).join('')}</div>` : '';
+    const descAttr = t.description ? ` title="${esc(t.description)}"` : '';
+    return `<div class="trace-item${active}" onclick="selectTrace('${t.trace_id}')"${descAttr}>
+      <div class="trace-item-wrap">
+        <span class="tid">${t.trace_id}</span>
+        ${tagsHtml}
+      </div>
       ${analysisBadge}
       <span class="meta">${t.msg_count}m</span>
       <span class="badge ${badgeCls}">${ic >= 0 ? ic : '?'}</span>
@@ -324,6 +356,7 @@ function renderTraceList() {
 
 document.getElementById('searchInput').addEventListener('input', renderTraceList);
 document.getElementById('issueFilter').addEventListener('change', renderTraceList);
+document.getElementById('tagFilter').addEventListener('change', renderTraceList);
 
 // ── Tabs ────────────────────────────────────────────────────────
 
@@ -551,6 +584,23 @@ function renderQC() {
   const el = document.getElementById('analysisContent');
   let html = '';
 
+  // Annotation editor
+  if (currentTraceId) {
+    const info = allTraces.find(t => t.trace_id === currentTraceId);
+    const tags = info?.tags || [];
+    const desc = info?.description || '';
+    html += `<div class="annotation-section">
+      <div class="section-title">Annotation</div>
+      <div class="ann-tags" id="annTags">
+        ${tags.map(tg => `<span class="tag-chip">${esc(tg)}<span class="tag-chip-rm" onclick="removeTag('${esc(tg)}')">&times;</span></span>`).join('')}
+        <input type="text" class="ann-tag-input" id="annTagInput" placeholder="+ tag" onkeydown="if(event.key==='Enter'){addTag(this.value);this.value='';event.preventDefault();}">
+      </div>
+      <textarea class="ann-desc" id="annDesc" placeholder="Add description...">${esc(desc)}</textarea>
+    </div>`;
+  }
+
+  html += '<div class="panel-right-body">';
+
   if (currentQC && !currentQC.error) {
     const ic = currentQC.issues_count || 0;
     html += `<div class="section">
@@ -604,16 +654,19 @@ function renderQC() {
     }
   }
 
+  html += '</div>'; // close .panel-right-body
+
   el.innerHTML = html;
 
   // If running, replay only un-rendered events into the live log
   if (currentTraceId && analysisState[currentTraceId] && analysisState[currentTraceId].status === 'running') {
     const st = analysisState[currentTraceId];
     const eventsToReplay = st.events;
+    const logEl = document.getElementById('agentLog');
     for (let i = 0; i < eventsToReplay.length; i++) {
       const ev = eventsToReplay[i];
       if (ev.type === 'done') continue;
-      handleSSEEvent(ev, currentTraceId);
+      handleSSEEvent(ev, currentTraceId, logEl);
     }
     st.renderedCount = eventsToReplay.length;
   }
@@ -683,8 +736,9 @@ function startAnalysisStream(traceId, url, fetchOpts) {
               st.events.push(ev);
               // Only render to DOM if this trace is currently viewed and event is new
               const evIdx = st.events.length - 1;
-              if (traceId === currentTraceId && document.getElementById('agentLog') && evIdx >= st.renderedCount) {
-                handleSSEEvent(ev, traceId);
+              const liveLog = (traceId === currentTraceId) ? document.getElementById('agentLog') : null;
+              if (liveLog && evIdx >= st.renderedCount) {
+                handleSSEEvent(ev, traceId, liveLog);
                 st.renderedCount = st.events.length;
               }
               if (ev.type === 'complete' || ev.type === 'error') finalizeStream(traceId, ev);
@@ -722,17 +776,16 @@ function finalizeStream(traceId, ev) {
     const log = document.getElementById('agentLog');
     if (log) st.logHtml = log.innerHTML;
   } else {
-    // Replay into temp container to get HTML
+    // Replay into temp container to get HTML (use isolated element to avoid ID collision)
     const tempDiv = document.createElement('div');
-    tempDiv.innerHTML = '<div class="agent-log" id="agentLog"></div>';
-    document.body.appendChild(tempDiv);
+    const tempLog = document.createElement('div');
+    tempLog.className = 'agent-log';
+    tempDiv.appendChild(tempLog);
     for (const e of st.events) {
       if (e.type === 'done') continue;
-      handleSSEEvent(e, traceId);
+      handleSSEEvent(e, traceId, tempLog);
     }
-    const log = tempDiv.querySelector('#agentLog');
-    if (log) st.logHtml = log.innerHTML;
-    document.body.removeChild(tempDiv);
+    st.logHtml = tempLog.innerHTML;
   }
 
   const traceInfo = allTraces.find(t => t.trace_id === traceId);
@@ -745,8 +798,8 @@ function esc(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-function handleSSEEvent(ev, traceId) {
-  const log = document.getElementById('agentLog');
+function handleSSEEvent(ev, traceId, targetLog) {
+  const log = targetLog || document.getElementById('agentLog');
   if (!log) return;
 
   const pfx = traceId ? traceId.slice(0, 8) + '-' : '';
@@ -765,7 +818,7 @@ function handleSSEEvent(ev, traceId) {
           <div class="iter-tool-result">${esc(tr.content)}</div>`;
       });
       toolResultsHtml += `</div>`;
-      const prevRound = document.getElementById(`${pfx}iter-body-${ev.call - 1}`);
+      const prevRound = log.querySelector(`#${CSS.escape(`${pfx}iter-body-${ev.call - 1}`)}`);
       if (prevRound) prevRound.insertAdjacentHTML('beforeend', toolResultsHtml);
     }
     log.innerHTML += `<div class="iter-round open" id="${pfx}iter-${ev.call}">
@@ -780,12 +833,12 @@ function handleSSEEvent(ev, traceId) {
       </div>
     </div>`;
   } else if (ev.type === 'llm_end') {
-    const running = document.getElementById(`${pfx}iter-running-${ev.call}`);
+    const running = log.querySelector(`#${CSS.escape(`${pfx}iter-running-${ev.call}`)}`);
     if (running) running.remove();
 
-    const body = document.getElementById(`${pfx}iter-body-${ev.call}`);
-    const summary = document.getElementById(`${pfx}iter-summary-${ev.call}`);
-    const timing = document.getElementById(`${pfx}iter-timing-${ev.call}`);
+    const body = log.querySelector(`#${CSS.escape(`${pfx}iter-body-${ev.call}`)}`);
+    const summary = log.querySelector(`#${CSS.escape(`${pfx}iter-summary-${ev.call}`)}`);
+    const timing = log.querySelector(`#${CSS.escape(`${pfx}iter-timing-${ev.call}`)}`);
 
     if (timing) {
       timing.innerHTML = `${ev.elapsed}s <span class="tokens">[${ev.prompt_tokens}+${ev.completion_tokens} tok, total: ${ev.total_tokens_so_far||'?'}]</span>`;
@@ -853,21 +906,80 @@ function replaySavedAnalysis(traceId, saved) {
   const events = saved.events || [];
   if (!events.length) return;
 
-  // Create a temporary hidden container to replay events into
-  const tempDiv = document.createElement('div');
-  tempDiv.innerHTML = '<div class="agent-log" id="agentLog"></div>';
-  document.body.appendChild(tempDiv);
+  // Replay into an isolated element (not attached to DOM) to avoid ID collision
+  const tempLog = document.createElement('div');
+  tempLog.className = 'agent-log';
 
   for (const ev of events) {
     if (ev.type === 'done') continue;
-    handleSSEEvent(ev, traceId);
+    handleSSEEvent(ev, traceId, tempLog);
   }
 
-  const log = tempDiv.querySelector('#agentLog');
-  const logHtml = log ? log.innerHTML : '';
-  document.body.removeChild(tempDiv);
-
+  const logHtml = tempLog.innerHTML;
   analysisState[traceId] = { status: 'saved', events, logHtml };
+}
+
+// ── Annotations ────────────────────────────────────────────────
+
+function addTag(tag) {
+  tag = tag.trim();
+  if (!tag || !currentTraceId) return;
+  const info = allTraces.find(t => t.trace_id === currentTraceId);
+  if (!info) return;
+  if (!info.tags) info.tags = [];
+  if (info.tags.includes(tag)) return;
+  info.tags.push(tag);
+  saveAnnotation();
+  renderQC();
+  renderTraceList();
+  refreshTagFilter();
+}
+
+function removeTag(tag) {
+  if (!currentTraceId) return;
+  const info = allTraces.find(t => t.trace_id === currentTraceId);
+  if (!info || !info.tags) return;
+  info.tags = info.tags.filter(t => t !== tag);
+  saveAnnotation();
+  renderQC();
+  renderTraceList();
+  refreshTagFilter();
+}
+
+let _descTimer = null;
+document.getElementById('analysisContent').addEventListener('input', e => {
+  if (e.target.id === 'annDesc') {
+    clearTimeout(_descTimer);
+    _descTimer = setTimeout(() => {
+      const info = allTraces.find(t => t.trace_id === currentTraceId);
+      if (info) {
+        info.description = e.target.value;
+        saveAnnotation();
+        renderTraceList();
+      }
+    }, 600);
+  }
+});
+
+function saveAnnotation() {
+  if (!currentTraceId) return;
+  const info = allTraces.find(t => t.trace_id === currentTraceId);
+  const tags = info?.tags || [];
+  const description = info?.description || '';
+  fetch(apiUrl(`/api/traces/${currentTraceId}/annotation`), {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ tags, description }),
+  });
+}
+
+function refreshTagFilter() {
+  const sel = document.getElementById('tagFilter');
+  const current = sel.value;
+  const allTags = new Set();
+  allTraces.forEach(t => (t.tags || []).forEach(tg => allTags.add(tg)));
+  sel.innerHTML = '<option value="">Tags</option>' +
+    [...allTags].sort().map(tg => `<option value="${esc(tg)}"${tg === current ? ' selected' : ''}>${esc(tg)}</option>`).join('');
 }
 
 // ── Context menu for text selection ────────────────────────────
